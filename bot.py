@@ -38,9 +38,9 @@ def keep_alive():
     t.start()
 
 # ----------------- Configuration (PLACEHOLDERS) -----------------
-TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN_HERE'      # <-- replace with your bot token
-OWNER_ID = 123456789                        # <-- replace with owner's Telegram ID (int)
-ADMIN_ID = 123456789                        # <-- replace with admin's Telegram ID (int)
+TOKEN = '8419880200:AAG5OpgB0BG7FOpN-XrUu_7y3hGJKmWimI4'      # <-- replace with your bot token
+OWNER_ID = 7652176329                        # <-- replace with owner's Telegram ID (int)
+ADMIN_ID = 7652176329                        # <-- replace with admin's Telegram ID (int)
 YOUR_USERNAME = 'your_username_here'        # <-- replace without @
 UPDATE_CHANNEL = 'https://t.me/yourchannel' # <-- replace with your updates channel URL
 
