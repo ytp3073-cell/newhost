@@ -27,8 +27,8 @@ logging.getLogger('telegram.ext').setLevel(logging.WARNING)
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # Configuration
-BOT_TOKEN = "8540731822:AAH8bcyMEOfr8ld12hybV6gq7iUdQV6-w1I"
-ALLOWED_CHAT_IDS = ["7817659013"]
+BOT_TOKEN = "7938482334:AAF82rRWiput8sccOSeptJ0NRK5ucaluBFQ"
+ALLOWED_CHAT_IDS = ["8018964088"]
 TEMP_DIR = "./temp_files"
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 SEARCH_LIMIT = 150  # Max search results
@@ -1290,3 +1290,4 @@ if __name__ == "__main__":
     print(f"Platform: {platform.system()}")
     print(f"Python: {platform.python_version()}")
     main()
+
