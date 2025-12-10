@@ -9,7 +9,7 @@ BOT_TOKEN = "8563144181:AAG_36UamHSRFNGmIpgdjA94PF76uAGmEKE"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # 👑 OWNER TELEGRAM ID
-OWNER_ID = 7652176329  # यहाँ अपना Telegram numeric ID डालना
+OWNER_ID = 7652176329  # अपना Telegram numeric ID यहाँ डाल
 
 USERS = set()
 
@@ -37,32 +37,14 @@ def validate_ifsc(text):
 
 
 # ────────────────────────────────
-# ⚙️ Safe Request Wrapper
-# ────────────────────────────────
-def safe_get(url, timeout=10):
-    try:
-        r = requests.get(url, timeout=timeout)
-        r.raise_for_status()
-        return r
-    except requests.exceptions.Timeout:
-        return f"⚠️ *Error:* Connection timeout.\n🌐 URL: {url}"
-    except requests.exceptions.ConnectionError:
-        return f"⚠️ *Error:* Failed to connect.\n🌐 URL: {url}"
-    except requests.exceptions.HTTPError as e:
-        return f"⚠️ *Error:* HTTP {r.status_code} — {e}\n🌐 URL: {url}"
-    except Exception as e:
-        return f"⚠️ *Unexpected Error:* {e}\n🌐 URL: {url}"
-
-
-# ────────────────────────────────
-# 📡 APIs
+# 📡 API Functions
 # ────────────────────────────────
 def get_info(number):
-    res = safe_get(f"https://abbas-number-info.vercel.app/track?num={number}")
-    if isinstance(res, str): return res
     try:
-        data = res.json()
-        if not data.get("success"): return "❌ कोई जानकारी नहीं मिली।"
+        r = requests.get(f"https://abbas-number-info.vercel.app/track?num={number}", timeout=10)
+        data = r.json()
+        if not data.get("success"):
+            return None
         d = data["data"]
         msg = (
             f"👤 *Name:* {d.get('name','N/A')}\n"
@@ -73,55 +55,65 @@ def get_info(number):
             f"📞 *Alt Mobile:* {d.get('alt_mobile','N/A')}\n"
             f"📍 *Circle:* {d.get('circle','N/A')}\n"
         )
+        if d.get("id_number") and re.fullmatch(r"\d{12}", str(d["id_number"])):
+            aadhar = str(d["id_number"])
+            msg += "\n🪪 *Aadhar Lookup:*\n"
+            msg += get_aadhar_info(aadhar)
+            msg += "\n\n👨‍👩‍👧‍👦 *Family Tree:*\n"
+            msg += get_family_tree(aadhar)
         return msg
     except Exception as e:
-        return f"⚠️ *Error (Number API):* {e}"
-
+        return f"⚠️ Error (Number Info): {e}"
 
 def get_local_num_info(number):
-    res = safe_get(f"http://62.122.189.157:5000/num?number={number}")
-    if isinstance(res, str): return res
     try:
-        data = res.json()
-        if not data: return "❌ Local API empty."
+        r = requests.get(f"http://62.122.189.157:5000/num?number={number}", timeout=10)
+        if r.status_code != 200:
+            return "❌ Local API error."
+        data = r.json()
+        if not data:
+            return "❌ कोई डेटा नहीं मिला।"
         return (
-            f"👤 *Name:* {data.get('name','N/A')}\n"
-            f"🏠 *Address:* {data.get('address','N/A')}\n"
-            f"📞 *Mobile:* {data.get('number','N/A')}\n"
-            f"📍 *State:* {data.get('state','N/A')}"
+            f"• 👤 *Name:* {data.get('name','N/A')}\n"
+            f"• 🏠 *Address:* {data.get('address','N/A')}\n"
+            f"• 📞 *Mobile:* {data.get('number','N/A')}\n"
+            f"• 📍 *State:* {data.get('state','N/A')}"
         )
     except Exception as e:
-        return f"⚠️ *Error (Local API):* {e}"
-
+        return f"⚠️ Local API Error: {e}"
 
 def get_aadhar_info(aadhar):
-    res = safe_get(f"http://62.122.189.157:5000/aadhar?aadhar={aadhar}")
-    if isinstance(res, str): return res
     try:
-        data = res.json()
+        r = requests.get(f"http://62.122.189.157:5000/aadhar?aadhar={aadhar}", timeout=10)
+        if r.status_code != 200:
+            return "❌ Aadhar API error."
+        data = r.json()
         if not data or "name" not in data:
-            return "❌ कोई Aadhar जानकारी नहीं मिली।"
+            return "❌ Aadhar info not found."
         return (
-            f"👤 *Name:* {data.get('name','N/A')}\n"
-            f"🧓 *Father:* {data.get('father','N/A')}\n"
-            f"🎂 *DOB:* {data.get('dob','N/A')}\n"
-            f"🏠 *Address:* {data.get('address','N/A')}\n"
-            f"📍 *State:* {data.get('state','N/A')}\n"
-            f"🆔 *Aadhar:* `{aadhar}`"
+            f"• 👤 *Name:* {data.get('name','N/A')}\n"
+            f"• 🧓 *Father:* {data.get('father','N/A')}\n"
+            f"• 🎂 *DOB:* {data.get('dob','N/A')}\n"
+            f"• 🏠 *Address:* {data.get('address','N/A')}\n"
+            f"• 📍 *State:* {data.get('state','N/A')}\n"
+            f"• 🆔 *Aadhar:* `{aadhar}`"
         )
     except Exception as e:
-        return f"⚠️ *Error (Aadhar API):* {e}"
-
+        return f"⚠️ Aadhar Error: {e}"
 
 def get_family_tree(aadhar):
-    res = safe_get(f"https://chx-family-info.vercel.app/fetch?key=paidchx&aadhaar={aadhar}")
-    if isinstance(res, str): return res
     try:
-        data = res.json()
+        url = f"https://chx-family-info.vercel.app/fetch?key=paidchx&aadhaar={aadhar}"
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return "❌ Family Tree API error."
+        data = r.json()
         if not isinstance(data, dict) or "memberDetailsList" not in data:
             return "❌ Family info not found."
         members = data.get("memberDetailsList", [])
-        if not members: return "❌ Family list empty."
+        if not members:
+            return "❌ Family list empty."
+
         msg = (
             f"🏠 *Address:* {data.get('address','N/A')}\n"
             f"🏙️ *District:* {data.get('homeDistName','N/A')}\n"
@@ -131,47 +123,45 @@ def get_family_tree(aadhar):
             "👨‍👩‍👧‍👦 *Family Members:*\n"
         )
         for i, m in enumerate(members, start=1):
-            msg += f"{i}. {m.get('memberName','N/A')} — {m.get('releationship_name','N/A')}\n"
+            msg += f"{i}. {m.get('memberName','N/A')} - {m.get('releationship_name','N/A')}\n"
         return msg.strip()
     except Exception as e:
-        return f"⚠️ *Error (Family API):* {e}"
-
+        return f"⚠️ Family Tree Error: {e}"
 
 def get_postoffices_by_city(city):
-    res = safe_get(f"https://api.postalpincode.in/postoffice/{city}")
-    if isinstance(res, str): return res
     try:
-        data = res.json()[0]
-        if data["Status"] != "Success": return "❌ कोई पोस्ट ऑफिस नहीं मिला।"
+        r = requests.get(f"https://api.postalpincode.in/postoffice/{city}", timeout=10)
+        data = r.json()[0]
+        if data["Status"] != "Success":
+            return "❌ कोई पोस्ट ऑफिस नहीं मिला।"
         offices = data["PostOffice"]
         msg = f"🏙️ *City:* {city.title()}\n📦 *Post Offices:* {len(offices)}\n━━━━━━━━━━━━━━━━━━━\n"
         for i, o in enumerate(offices[:10], start=1):
-            msg += f"{i}. {o['Name']} ({o['BranchType']}) — {o['District']}, {o['State']}\n"
+            msg += f"{i}. {o['Name']} ({o['BranchType']}) - {o['District']}, {o['State']}\n"
         return msg
     except Exception as e:
-        return f"⚠️ *Error (City API):* {e}"
-
+        return f"⚠️ City API Error: {e}"
 
 def get_info_by_pincode(pin):
-    res = safe_get(f"https://api.postalpincode.in/pincode/{pin}")
-    if isinstance(res, str): return res
     try:
-        data = res.json()[0]
-        if data["Status"] != "Success": return "❌ Invalid PIN code."
+        r = requests.get(f"https://api.postalpincode.in/pincode/{pin}", timeout=10)
+        data = r.json()[0]
+        if data["Status"] != "Success":
+            return "❌ Invalid PIN code."
         offices = data["PostOffice"]
         msg = f"📮 *Pincode:* {pin}\n🏙️ *Post Offices:* {len(offices)}\n━━━━━━━━━━━━━━━━━━━\n"
         for i, o in enumerate(offices[:10], start=1):
-            msg += f"{i}. {o['Name']} ({o['BranchType']}) — {o['District']}, {o['State']}\n"
+            msg += f"{i}. {o['Name']} ({o['BranchType']}) - {o['District']}, {o['State']}\n"
         return msg
     except Exception as e:
-        return f"⚠️ *Error (Pincode API):* {e}"
-
+        return f"⚠️ Pincode API Error: {e}"
 
 def get_bank_info(ifsc):
-    res = safe_get(f"https://ab-ifscinfoapi.vercel.app/info?ifsc={ifsc}")
-    if isinstance(res, str): return res
     try:
-        data = res.json()
+        r = requests.get(f"https://ab-ifscinfoapi.vercel.app/info?ifsc={ifsc}", timeout=10)
+        if r.status_code != 200:
+            return "❌ IFSC API error."
+        data = r.json()
         if not data or "Bank Name" not in data:
             return "❌ Bank info not found."
         return (
@@ -187,87 +177,112 @@ def get_bank_info(ifsc):
             f"📲 *UPI:* {data.get('UPI','N/A')}"
         )
     except Exception as e:
-        return f"⚠️ *Error (Bank API):* {e}"
+        return f"⚠️ Bank API Error: {e}"
 
 
 # ────────────────────────────────
-# 🧭 Keyboards
+# 📋 Keyboards
 # ────────────────────────────────
-def main_keyboard(uid):
+def main_keyboard(user_id):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("📱 Mobile Info", "🪪 Aadhar Info")
-    kb.row("🏙️ City → Post Offices", "📮 Pincode Info")
-    kb.row("🏦 IFSC → Bank Info")
-    if uid == OWNER_ID:
+    kb.row("👨‍👩‍👧‍👦 Family", "🏙️ City → Post Offices")
+    kb.row("📮 Pincode Info", "🏦 IFSC → Bank Info")
+    if user_id == OWNER_ID:
         kb.row("👑 Owner Panel")
+    return kb
+
+def owner_keyboard():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("📊 Stats", "📢 Broadcast")
+    kb.row("♻️ Restart", "⬅️ Back")
     return kb
 
 
 # ────────────────────────────────
-# /start
+# /start COMMAND
 # ────────────────────────────────
 @bot.message_handler(commands=['start'])
-def start_cmd(msg):
-    USERS.add(msg.from_user.id)
+def start_cmd(message):
+    USERS.add(message.from_user.id)
     bot.send_message(
-        msg.chat.id,
+        message.chat.id,
         "👋 *Welcome to Multi Info Bot!*\n\n"
         "📱 Mobile / 🪪 Aadhar / 👨‍👩‍👧‍👦 Family / 🏙️ City / 📮 Pincode / 🏦 IFSC\n\n"
         "👨‍💻 Developer ⏤͟͟͞͞ 𝙊𝙂𝙔𝙔 𝙋𝙍𝙄𝙈𝙀 (@ban8t)",
         parse_mode="Markdown",
-        reply_markup=main_keyboard(msg.from_user.id)
+        reply_markup=main_keyboard(message.from_user.id)
     )
 
 
 # ────────────────────────────────
 # MAIN HANDLER
 # ────────────────────────────────
-@bot.message_handler(func=lambda m: True)
-def handler(msg):
-    text = (msg.text or "").strip()
-    uid = msg.from_user.id
+@bot.message_handler(func=lambda msg: True)
+def handler(message):
+    text = (message.text or "").strip()
+    uid = message.from_user.id
     USERS.add(uid)
 
-    try:
-        if validate_mobile(text):
-            res1 = get_info(text)
-            res2 = get_local_num_info(text)
-            bot.reply_to(msg, f"📱 *Mobile Info:*\n{res1}\n\n📍 *Local Data:*\n{res2}", parse_mode="Markdown", reply_markup=main_keyboard(uid))
+    # Owner Panel
+    if uid == OWNER_ID:
+        if text == "👑 Owner Panel":
+            bot.send_message(uid, "👑 *Owner Panel Activated*", parse_mode="Markdown", reply_markup=owner_keyboard())
             return
-        if validate_aadhar(text):
-            res = f"🪪 *Aadhar Info:*\n{get_aadhar_info(text)}\n\n👨‍👩‍👧‍👦 *Family Tree:*\n{get_family_tree(text)}"
-            bot.reply_to(msg, res, parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        elif text == "📊 Stats":
+            bot.reply_to(message, f"📈 *Total Users:* `{len(USERS)}`", parse_mode="Markdown", reply_markup=owner_keyboard())
             return
-        if validate_pincode(text):
-            bot.reply_to(msg, get_info_by_pincode(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        elif text == "📢 Broadcast":
+            bot.reply_to(message, "📩 Broadcast message भेजो:", reply_markup=types.ForceReply(selective=True))
             return
-        if validate_ifsc(text):
-            bot.reply_to(msg, get_bank_info(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        elif text == "♻️ Restart":
+            bot.reply_to(message, "🔁 Bot restart simulated.", reply_markup=main_keyboard(uid))
             return
-        if re.fullmatch(r"[A-Za-z ]{2,}", text):
-            bot.reply_to(msg, get_postoffices_by_city(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        elif text == "⬅️ Back":
+            bot.reply_to(message, "↩️ Main menu पर लौटे।", reply_markup=main_keyboard(uid))
             return
 
-        bot.reply_to(
-            msg,
-            "⚠️ *गलत इनपुट!* सही फ़ॉर्मेट ऐसे इस्तेमाल करो 👇\n\n"
-            "📱 Mobile: 9876543210\n"
-            "🪪 Aadhar: 202372727238\n"
-            "🏙️ City: Delhi\n"
-            "📮 Pincode: 400001\n"
-            "🏦 IFSC: SBIN0018386\n\n"
-            "👨‍💻 Developer ⏤͟͟͞͞ 𝙊𝙂𝙔𝙔 𝙋𝙍𝙄𝙈𝙀 (@ban8t)",
-            parse_mode="Markdown",
-            reply_markup=main_keyboard(uid)
-        )
+    # Family Button
+    if text == "👨‍👩‍👧‍👦 Family":
+        bot.reply_to(message, "🪪 Aadhaar Number भेजो (12-digit):", reply_markup=types.ReplyKeyboardRemove())
+        return
 
-    except Exception as e:
-        bot.reply_to(msg, f"⚠️ *Unexpected Error:* {e}", parse_mode="Markdown", reply_markup=main_keyboard(uid))
+    # Inputs
+    if validate_mobile(text):
+        bot.reply_to(message, get_info(text) or "❌ कोई डेटा नहीं मिला।", parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        return
+    if validate_aadhar(text):
+        msg = f"🪪 *Aadhar Info:*\n\n{get_aadhar_info(text)}\n\n👨‍👩‍👧‍👦 *Family Tree:*\n\n{get_family_tree(text)}"
+        bot.reply_to(message, msg, parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        return
+    if validate_pincode(text):
+        bot.reply_to(message, get_info_by_pincode(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        return
+    if validate_ifsc(text):
+        bot.reply_to(message, get_bank_info(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        return
+    if re.fullmatch(r"[A-Za-z ]{2,}", text):
+        bot.reply_to(message, get_postoffices_by_city(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        return
+
+    # Invalid Input
+    bot.send_message(
+        uid,
+        "⚠️ *गलत इनपुट!* सही फ़ॉर्मेट ऐसे इस्तेमाल करो 👇\n\n"
+        "📱 Mobile: 9876543210\n"
+        "🪪 Aadhar: 202372727238\n"
+        "🏙️ City: Delhi\n"
+        "📮 Pincode: 400001\n"
+        "🏦 IFSC: SBIN0018386\n\n"
+        "👨‍💻 Developer ⏤͟͟͞͞ 𝙊𝙂𝙔𝙔 𝙋𝙍𝙄𝙈𝙀 (@ban8t)",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(uid)
+    )
 
 
 # ────────────────────────────────
 # RUN
 # ────────────────────────────────
 if __name__ == "__main__":
-    print("🤖 Safe Bot running with full error protection...")
-    bot.infinity_polling(skip_pending=True)
+    print("🤖 Bot running with Family Button and Hidden Owner Panel...")
+    bot.infinity_polling()
