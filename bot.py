@@ -4,11 +4,11 @@ import requests
 import re
 from telebot import types
 
-# 🔑 Telegram Bot Token (NEW)
+# 🔑 Telegram Bot Token
 BOT_TOKEN = "8563144181:AAG_36UamHSRFNGmIpgdjA94PF76uAGmEKE"
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# 👑 OWNER TELEGRAM ID (NEW)
+# 👑 OWNER TELEGRAM ID
 OWNER_ID = 7652176329  
 
 USERS = set()
@@ -212,27 +212,27 @@ def handler(message):
     uid = message.from_user.id
     USERS.add(uid)
 
-    # Owner panel
+    # Owner Panel
     if uid == OWNER_ID:
         if text == "👑 Owner Panel":
             bot.send_message(uid, "👑 *Owner Panel Activated*", parse_mode="Markdown", reply_markup=owner_keyboard())
             return
-        elif text == "📊 Stats":
-            bot.reply_to(message, f"📈 *Total Users:* `{len(USERS)}`", parse_mode="Markdown", reply_markup=owner_keyboard())
+        if text == "📊 Stats":
+            bot.send_message(uid, f"📈 *Total Users:* `{len(USERS)}`", parse_mode="Markdown", reply_markup=owner_keyboard())
             return
-        elif text == "📢 Broadcast":
+        if text == "📢 Broadcast":
             BROADCAST_MODE = True
-            bot.reply_to(message, "📩 अब Broadcast message भेजो:", reply_markup=types.ForceReply(selective=True))
+            bot.send_message(uid, "📩 अब Broadcast message भेजो:")
             return
-        elif text == "♻️ Restart":
-            bot.reply_to(message, "🔁 Bot restart simulated.", reply_markup=main_keyboard(uid))
+        if text == "♻️ Restart":
+            bot.send_message(uid, "🔁 Bot restart simulated.", reply_markup=main_keyboard(uid))
             return
-        elif text == "⬅️ Back":
+        if text == "⬅️ Back":
             BROADCAST_MODE = False
-            bot.reply_to(message, "↩️ Main menu पर लौटे।", reply_markup=main_keyboard(uid))
+            bot.send_message(uid, "↩️ Main menu पर लौटे।", reply_markup=main_keyboard(uid))
             return
 
-    # Broadcast Mode
+    # Broadcast
     if BROADCAST_MODE and uid == OWNER_ID:
         for user in USERS:
             try:
@@ -240,36 +240,36 @@ def handler(message):
             except:
                 continue
         BROADCAST_MODE = False
-        bot.reply_to(message, "✅ Broadcast Sent to all users.", reply_markup=owner_keyboard())
+        bot.send_message(uid, "✅ Broadcast Sent to all users.", reply_markup=owner_keyboard())
         return
 
-    # Family Button
+    # Functional Inputs
     if text == "👨‍👩‍👧‍👦 Family":
-        bot.reply_to(message, "🪪 Aadhaar Number भेजो (12-digit):", reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(uid, "🪪 Aadhaar Number भेजो (12-digit):", reply_markup=types.ReplyKeyboardRemove())
+        return
+    elif validate_mobile(text):
+        bot.send_message(uid, get_info(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        return
+    elif validate_aadhar(text):
+        bot.send_message(uid, f"🪪 *Aadhar Info:*\n\n{get_aadhar_info(text)}\n\n👨‍👩‍👧‍👦 *Family Tree:*\n\n{get_family_tree(text)}", parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        return
+    elif validate_pincode(text):
+        bot.send_message(uid, get_info_by_pincode(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        return
+    elif validate_ifsc(text):
+        bot.send_message(uid, get_bank_info(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
+        return
+    elif re.fullmatch(r"[A-Za-z ]{2,}", text):
+        bot.send_message(uid, get_postoffices_by_city(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
         return
 
-    # Input Handling
-    if validate_mobile(text):
-        bot.reply_to(message, get_info(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
-        return
-    if validate_aadhar(text):
-        bot.reply_to(message, f"🪪 *Aadhar Info:*\n\n{get_aadhar_info(text)}\n\n👨‍👩‍👧‍👦 *Family Tree:*\n\n{get_family_tree(text)}", parse_mode="Markdown", reply_markup=main_keyboard(uid))
-        return
-    if validate_pincode(text):
-        bot.reply_to(message, get_info_by_pincode(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
-        return
-    if validate_ifsc(text):
-        bot.reply_to(message, get_bank_info(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
-        return
-    if re.fullmatch(r"[A-Za-z ]{2,}", text):
-        bot.reply_to(message, get_postoffices_by_city(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
-        return
-
-    bot.reply_to(message, "⚠️ गलत इनपुट।", reply_markup=main_keyboard(uid))
+    # Invalid Only Once
+    if text not in ["📱 Mobile Info", "🪪 Aadhar Info", "🏙️ City → Post Offices", "📮 Pincode Info", "🏦 IFSC → Bank Info"]:
+        bot.send_message(uid, "⚠️ गलत इनपुट।", reply_markup=main_keyboard(uid))
 
 # ────────────────────────────────
 # RUN
 # ────────────────────────────────
 if __name__ == "__main__":
-    print("🤖 Bot running — all commands active.")
+    print("🤖 Bot running — all commands active & input fixed.")
     bot.infinity_polling()
