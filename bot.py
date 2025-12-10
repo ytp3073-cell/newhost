@@ -4,272 +4,179 @@ import requests
 import re
 from telebot import types
 
-# 🔑 Telegram Bot Token
+# 🔑 Bot Token & Owner ID
 BOT_TOKEN = "8563144181:AAG_36UamHSRFNGmIpgdjA94PF76uAGmEKE"
+OWNER_ID = 7652176329
+
 bot = telebot.TeleBot(BOT_TOKEN)
-
-# 👑 OWNER TELEGRAM ID
-OWNER_ID = 7652176329  
-
 USERS = set()
-BROADCAST_MODE = False
+WAITING_MODE = {}
+BROADCAST_MODE = {}
 
 # ────────────────────────────────
-# ✅ Validators
+# 🔍 Validators
 # ────────────────────────────────
 def validate_mobile(num):
     s = num.strip().replace(" ", "").replace("-", "")
-    if s.startswith("+91"):
-        s = s[3:]
-    elif s.startswith("91") and len(s) == 12:
-        s = s[2:]
+    if s.startswith("+91"): s = s[3:]
+    elif s.startswith("91") and len(s) == 12: s = s[2:]
     return s if re.fullmatch(r"\d{10}", s) else None
 
-def validate_aadhar(text):
-    s = text.strip().replace(" ", "").replace("-", "")
-    return s if re.fullmatch(r"\d{12}", s) else None
-
-def validate_pincode(text):
-    return text if re.fullmatch(r"\d{6}", text.strip()) else None
-
-def validate_ifsc(text):
-    s = text.strip().upper()
-    return s if re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", s) else None
+def validate_aadhar(t): return t.strip().replace(" ", "") if re.fullmatch(r"\d{12}", t.strip().replace(" ", "")) else None
+def validate_pincode(t): return t if re.fullmatch(r"\d{6}", t.strip()) else None
+def validate_ifsc(t): s = t.strip().upper(); return s if re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", s) else None
 
 # ────────────────────────────────
-# 📡 API Functions
+# 🌐 API Calls
 # ────────────────────────────────
-def get_info(number):
+def get_json(url): 
     try:
-        r = requests.get(f"https://abbas-number-info.vercel.app/track?num={number}", timeout=10)
-        data = r.json()
-        if not data.get("success"):
-            return "❌ कोई डेटा नहीं मिला।"
-        d = data["data"]
-        msg = (
-            f"👤 *Name:* {d.get('name','N/A')}\n"
-            f"👨‍🦳 *Father:* {d.get('father_name','N/A')}\n"
-            f"📱 *Mobile:* {d.get('mobile','N/A')}\n"
-            f"🆔 *Aadhar:* {d.get('id_number','N/A')}\n"
+        r = requests.get(url, timeout=10)
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+def get_info(num):
+    d = get_json(f"https://abbas-number-info.vercel.app/track?num={num}")
+    if not d.get("success"): return "❌ कोई डेटा नहीं मिला।"
+    d = d["data"]
+    msg = (f"👤 *Name:* {d.get('name','N/A')}\n"
+           f"👨‍🦳 *Father:* {d.get('father_name','N/A')}\n"
+           f"📱 *Mobile:* {d.get('mobile','N/A')}\n"
+           f"🆔 *Aadhar:* {d.get('id_number','N/A')}\n"
+           f"🏠 *Address:* {d.get('address','N/A')}\n"
+           f"📍 *Circle:* {d.get('circle','N/A')}\n")
+    return msg
+
+def get_aadhar_info(a):
+    d = get_json(f"http://62.122.189.157:5000/aadhar?aadhar={a}")
+    if not d or "name" not in d: return "❌ Aadhar info not found."
+    return (f"👤 *Name:* {d.get('name','N/A')}\n"
+            f"👨‍🦳 *Father:* {d.get('father','N/A')}\n"
+            f"🎂 *DOB:* {d.get('dob','N/A')}\n"
             f"🏠 *Address:* {d.get('address','N/A')}\n"
-            f"📞 *Alt Mobile:* {d.get('alt_mobile','N/A')}\n"
-            f"📍 *Circle:* {d.get('circle','N/A')}\n"
-        )
-        if d.get("id_number") and re.fullmatch(r"\d{12}", str(d["id_number"])):
-            aadhar = str(d["id_number"])
-            msg += "\n🪪 *Aadhar Lookup:*\n"
-            msg += get_aadhar_info(aadhar)
-            msg += "\n\n👨‍👩‍👧‍👦 *Family Tree:*\n"
-            msg += get_family_tree(aadhar)
-        return msg
-    except Exception as e:
-        return f"⚠️ Error (Number Info): {e}"
+            f"📍 *State:* {d.get('state','N/A')}\n"
+            f"🆔 *Aadhar:* `{a}`")
 
-def get_local_num_info(number):
-    try:
-        r = requests.get(f"http://62.122.189.157:5000/num?number={number}", timeout=10)
-        data = r.json()
-        if not data:
-            return "❌ कोई डेटा नहीं मिला।"
-        return (
-            f"• 👤 *Name:* {data.get('name','N/A')}\n"
-            f"• 🏠 *Address:* {data.get('address','N/A')}\n"
-            f"• 📞 *Mobile:* {data.get('number','N/A')}\n"
-            f"• 📍 *State:* {data.get('state','N/A')}"
-        )
-    except Exception as e:
-        return f"⚠️ Local API Error: {e}"
+def get_family_tree(a):
+    d = get_json(f"https://chx-family-info.vercel.app/fetch?key=paidchx&aadhaar={a}")
+    if "memberDetailsList" not in d: return "❌ Family info not found."
+    members = d.get("memberDetailsList", [])
+    msg = "👨‍👩‍👧‍👦 *Family Members:*\n"
+    for i, m in enumerate(members, 1):
+        msg += f"{i}. {m.get('memberName','N/A')} - {m.get('releationship_name','N/A')}\n"
+    return msg.strip()
 
-def get_aadhar_info(aadhar):
-    try:
-        r = requests.get(f"http://62.122.189.157:5000/aadhar?aadhar={aadhar}", timeout=10)
-        data = r.json()
-        if not data or "name" not in data:
-            return "❌ Aadhar info not found."
-        return (
-            f"• 👤 *Name:* {data.get('name','N/A')}\n"
-            f"• 🧓 *Father:* {data.get('father','N/A')}\n"
-            f"• 🎂 *DOB:* {data.get('dob','N/A')}\n"
-            f"• 🏠 *Address:* {data.get('address','N/A')}\n"
-            f"• 📍 *State:* {data.get('state','N/A')}\n"
-            f"• 🆔 *Aadhar:* `{aadhar}`"
-        )
-    except Exception as e:
-        return f"⚠️ Aadhar Error: {e}"
+def get_city_info(c):
+    d = get_json(f"https://api.postalpincode.in/postoffice/{c}")
+    if not isinstance(d, list) or d[0]["Status"] != "Success": return "❌ कोई पोस्ट ऑफिस नहीं मिला।"
+    p = d[0]["PostOffice"]
+    msg = f"🏙️ *City:* {c.title()}\n📦 Offices: {len(p)}\n━━━━━━━━━━━━━━━\n"
+    for i, o in enumerate(p[:10], 1):
+        msg += f"{i}. {o['Name']} ({o['BranchType']}) - {o['District']}, {o['State']}\n"
+    return msg
 
-def get_family_tree(aadhar):
-    try:
-        r = requests.get(f"https://chx-family-info.vercel.app/fetch?key=paidchx&aadhaar={aadhar}", timeout=10)
-        data = r.json()
-        if not isinstance(data, dict) or "memberDetailsList" not in data:
-            return "❌ Family info not found."
-        members = data.get("memberDetailsList", [])
-        if not members:
-            return "❌ Family list empty."
-        msg = (
-            f"🏠 *Address:* {data.get('address','N/A')}\n"
-            f"🏙️ *District:* {data.get('homeDistName','N/A')}\n"
-            f"🌏 *State:* {data.get('homeStateName','N/A')}\n"
-            f"📄 *RC ID:* {data.get('rcId','N/A')}\n"
-            f"🎯 *Scheme:* {data.get('schemeName','N/A')}\n\n"
-            "👨‍👩‍👧‍👦 *Family Members:*\n"
-        )
-        for i, m in enumerate(members, start=1):
-            msg += f"{i}. {m.get('memberName','N/A')} - {m.get('releationship_name','N/A')}\n"
-        return msg.strip()
-    except Exception as e:
-        return f"⚠️ Family Tree Error: {e}"
+def get_pin_info(pin):
+    d = get_json(f"https://api.postalpincode.in/pincode/{pin}")
+    if not isinstance(d, list) or d[0]["Status"] != "Success": return "❌ Invalid PIN code."
+    p = d[0]["PostOffice"]
+    msg = f"📮 *Pincode:* {pin}\n🏙️ Offices: {len(p)}\n━━━━━━━━━━━━━━━\n"
+    for i, o in enumerate(p[:10], 1):
+        msg += f"{i}. {o['Name']} ({o['BranchType']}) - {o['District']}, {o['State']}\n"
+    return msg
 
-def get_postoffices_by_city(city):
-    try:
-        r = requests.get(f"https://api.postalpincode.in/postoffice/{city}", timeout=10)
-        data = r.json()[0]
-        if data["Status"] != "Success":
-            return "❌ कोई पोस्ट ऑफिस नहीं मिला।"
-        offices = data["PostOffice"]
-        msg = f"🏙️ *City:* {city.title()}\n📦 *Post Offices:* {len(offices)}\n━━━━━━━━━━━━━━━━━━━\n"
-        for i, o in enumerate(offices[:10], start=1):
-            msg += f"{i}. {o['Name']} ({o['BranchType']}) - {o['District']}, {o['State']}\n"
-        return msg
-    except Exception as e:
-        return f"⚠️ City API Error: {e}"
-
-def get_info_by_pincode(pin):
-    try:
-        r = requests.get(f"https://api.postalpincode.in/pincode/{pin}", timeout=10)
-        data = r.json()[0]
-        if data["Status"] != "Success":
-            return "❌ Invalid PIN code."
-        offices = data["PostOffice"]
-        msg = f"📮 *Pincode:* {pin}\n🏙️ *Post Offices:* {len(offices)}\n━━━━━━━━━━━━━━━━━━━\n"
-        for i, o in enumerate(offices[:10], start=1):
-            msg += f"{i}. {o['Name']} ({o['BranchType']}) - {o['District']}, {o['State']}\n"
-        return msg
-    except Exception as e:
-        return f"⚠️ Pincode API Error: {e}"
-
-def get_bank_info(ifsc):
-    try:
-        r = requests.get(f"https://ab-ifscinfoapi.vercel.app/info?ifsc={ifsc}", timeout=10)
-        data = r.json()
-        if not data or "Bank Name" not in data:
-            return "❌ Bank info not found."
-        return (
-            f"🏦 *Bank:* {data.get('Bank Name','N/A')}\n"
-            f"🏢 *Branch:* {data.get('Branch','N/A')}\n"
-            f"🆔 *IFSC:* `{data.get('IFSC','N/A')}`\n"
-            f"🏠 *Address:* {data.get('Address','N/A')}\n"
-            f"🏙️ *City:* {data.get('City','N/A')} | {data.get('State','N/A')}\n"
-            f"📞 *Contact:* {data.get('Contact','N/A')}\n"
-            f"💸 *RTGS:* {data.get('RTGS','N/A')}\n"
-            f"💰 *NEFT:* {data.get('NEFT','N/A')}\n"
-            f"⚡ *IMPS:* {data.get('IMPS','N/A')}\n"
-            f"📲 *UPI:* {data.get('UPI','N/A')}"
-        )
-    except Exception as e:
-        return f"⚠️ Bank API Error: {e}"
+def get_ifsc_info(ifsc):
+    d = get_json(f"https://ab-ifscinfoapi.vercel.app/info?ifsc={ifsc}")
+    if "Bank Name" not in d: return "❌ Bank info not found."
+    return (f"🏦 *Bank:* {d['Bank Name']}\n🏢 *Branch:* {d['Branch']}\n"
+            f"🆔 *IFSC:* `{d['IFSC']}`\n🏠 *Address:* {d['Address']}\n"
+            f"🏙️ *City:* {d['City']} | {d['State']}\n📞 *Contact:* {d['Contact']}")
 
 # ────────────────────────────────
-# 📋 Keyboards
+# 🧭 Keyboards
 # ────────────────────────────────
-def main_keyboard(user_id):
+def main_kb(uid):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("📱 Mobile Info", "🪪 Aadhar Info")
     kb.row("👨‍👩‍👧‍👦 Family", "🏙️ City → Post Offices")
     kb.row("📮 Pincode Info", "🏦 IFSC → Bank Info")
-    if user_id == OWNER_ID:
-        kb.row("👑 Owner Panel")
+    if uid == OWNER_ID: kb.row("👑 Owner Panel")
     return kb
 
-def owner_keyboard():
+def owner_kb():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("📊 Stats", "📢 Broadcast")
     kb.row("♻️ Restart", "⬅️ Back")
     return kb
 
 # ────────────────────────────────
-# /start
+# 🚀 Commands
 # ────────────────────────────────
 @bot.message_handler(commands=['start'])
-def start_cmd(message):
-    USERS.add(message.from_user.id)
-    bot.send_message(
-        message.chat.id,
+def start(m):
+    USERS.add(m.chat.id)
+    bot.send_message(m.chat.id,
         "👋 *Welcome to Multi Info Bot!*\n\n"
         "📱 Mobile / 🪪 Aadhar / 👨‍👩‍👧‍👦 Family / 🏙️ City / 📮 Pincode / 🏦 IFSC\n\n"
         "👨‍💻 Developer ⏤͟͟͞͞ 𝙊𝙂𝙔𝙔 𝙋𝙍𝙄𝙈𝙀 (@ban8t)",
-        parse_mode="Markdown",
-        reply_markup=main_keyboard(message.from_user.id)
-    )
+        parse_mode="Markdown", reply_markup=main_kb(m.chat.id))
 
 # ────────────────────────────────
-# MAIN HANDLER
+# 💬 Main Handler
 # ────────────────────────────────
-@bot.message_handler(func=lambda msg: True)
-def handler(message):
+@bot.message_handler(func=lambda m: True)
+def handler(m):
     global BROADCAST_MODE
-    text = (message.text or "").strip()
-    uid = message.from_user.id
+    uid, text = m.chat.id, m.text.strip()
     USERS.add(uid)
 
-    # Owner Panel
+    # 🧠 Owner Panel Actions
     if uid == OWNER_ID:
         if text == "👑 Owner Panel":
-            bot.send_message(uid, "👑 *Owner Panel Activated*", parse_mode="Markdown", reply_markup=owner_keyboard())
-            return
-        if text == "📊 Stats":
-            bot.send_message(uid, f"📈 *Total Users:* `{len(USERS)}`", parse_mode="Markdown", reply_markup=owner_keyboard())
-            return
-        if text == "📢 Broadcast":
-            BROADCAST_MODE = True
-            bot.send_message(uid, "📩 अब Broadcast message भेजो:")
-            return
-        if text == "♻️ Restart":
-            bot.send_message(uid, "🔁 Bot restart simulated.", reply_markup=main_keyboard(uid))
-            return
-        if text == "⬅️ Back":
-            BROADCAST_MODE = False
-            bot.send_message(uid, "↩️ Main menu पर लौटे।", reply_markup=main_keyboard(uid))
-            return
+            bot.send_message(uid, "👑 *Owner Panel Activated*", parse_mode="Markdown", reply_markup=owner_kb()); return
+        elif text == "📊 Stats":
+            bot.send_message(uid, f"📈 *Total Users:* `{len(USERS)}`", parse_mode="Markdown"); return
+        elif text == "📢 Broadcast":
+            BROADCAST_MODE = True; bot.send_message(uid, "📩 Broadcast message भेजो:", reply_markup=types.ForceReply()); return
+        elif text == "♻️ Restart":
+            bot.send_message(uid, "🔁 Restart Done ✅", reply_markup=owner_kb()); return
+        elif text == "⬅️ Back":
+            BROADCAST_MODE = False; bot.send_message(uid, "↩️ Main Menu", reply_markup=main_kb(uid)); return
 
-    # Broadcast
+    # 📢 Broadcast Mode
     if BROADCAST_MODE and uid == OWNER_ID:
-        for user in USERS:
-            try:
-                bot.send_message(user, text)
-            except:
-                continue
+        for u in USERS:
+            try: bot.send_message(u, text)
+            except: pass
         BROADCAST_MODE = False
-        bot.send_message(uid, "✅ Broadcast Sent to all users.", reply_markup=owner_keyboard())
+        bot.send_message(uid, "✅ Broadcast sent to all users!", reply_markup=owner_kb()); return
+
+    # 🎯 Button Inputs
+    if text == "📱 Mobile Info": WAITING_MODE[uid] = "mobile"; bot.send_message(uid, "📲 Number भेजो:", reply_markup=types.ReplyKeyboardRemove()); return
+    if text == "🪪 Aadhar Info": WAITING_MODE[uid] = "aadhar"; bot.send_message(uid, "🪪 Aadhar Number भेजो:", reply_markup=types.ReplyKeyboardRemove()); return
+    if text == "👨‍👩‍👧‍👦 Family": WAITING_MODE[uid] = "family"; bot.send_message(uid, "🪪 Aadhar Number भेजो:", reply_markup=types.ReplyKeyboardRemove()); return
+    if text == "🏙️ City → Post Offices": WAITING_MODE[uid] = "city"; bot.send_message(uid, "🏙️ City Name भेजो:", reply_markup=types.ReplyKeyboardRemove()); return
+    if text == "📮 Pincode Info": WAITING_MODE[uid] = "pincode"; bot.send_message(uid, "📮 Pincode भेजो:", reply_markup=types.ReplyKeyboardRemove()); return
+    if text == "🏦 IFSC → Bank Info": WAITING_MODE[uid] = "ifsc"; bot.send_message(uid, "🏦 IFSC Code भेजो:", reply_markup=types.ReplyKeyboardRemove()); return
+
+    # 🔄 Waiting Mode Handling
+    if uid in WAITING_MODE:
+        mode = WAITING_MODE.pop(uid)
+        if mode == "mobile" and validate_mobile(text): bot.send_message(uid, get_info(text), parse_mode="Markdown", reply_markup=main_kb(uid))
+        elif mode == "aadhar" and validate_aadhar(text): bot.send_message(uid, get_aadhar_info(text), parse_mode="Markdown", reply_markup=main_kb(uid))
+        elif mode == "family" and validate_aadhar(text): bot.send_message(uid, get_family_tree(text), parse_mode="Markdown", reply_markup=main_kb(uid))
+        elif mode == "city": bot.send_message(uid, get_city_info(text), parse_mode="Markdown", reply_markup=main_kb(uid))
+        elif mode == "pincode" and validate_pincode(text): bot.send_message(uid, get_pin_info(text), parse_mode="Markdown", reply_markup=main_kb(uid))
+        elif mode == "ifsc" and validate_ifsc(text): bot.send_message(uid, get_ifsc_info(text), parse_mode="Markdown", reply_markup=main_kb(uid))
+        else: bot.send_message(uid, "⚠️ गलत इनपुट।", reply_markup=main_kb(uid))
         return
 
-    # Functional Inputs
-    if text == "👨‍👩‍👧‍👦 Family":
-        bot.send_message(uid, "🪪 Aadhaar Number भेजो (12-digit):", reply_markup=types.ReplyKeyboardRemove())
-        return
-    elif validate_mobile(text):
-        bot.send_message(uid, get_info(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
-        return
-    elif validate_aadhar(text):
-        bot.send_message(uid, f"🪪 *Aadhar Info:*\n\n{get_aadhar_info(text)}\n\n👨‍👩‍👧‍👦 *Family Tree:*\n\n{get_family_tree(text)}", parse_mode="Markdown", reply_markup=main_keyboard(uid))
-        return
-    elif validate_pincode(text):
-        bot.send_message(uid, get_info_by_pincode(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
-        return
-    elif validate_ifsc(text):
-        bot.send_message(uid, get_bank_info(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
-        return
-    elif re.fullmatch(r"[A-Za-z ]{2,}", text):
-        bot.send_message(uid, get_postoffices_by_city(text), parse_mode="Markdown", reply_markup=main_keyboard(uid))
-        return
-
-    # Invalid Only Once
-    if text not in ["📱 Mobile Info", "🪪 Aadhar Info", "🏙️ City → Post Offices", "📮 Pincode Info", "🏦 IFSC → Bank Info"]:
-        bot.send_message(uid, "⚠️ गलत इनपुट।", reply_markup=main_keyboard(uid))
+    # Default Fallback
+    bot.send_message(uid, "⚠️ गलत इनपुट।", reply_markup=main_kb(uid))
 
 # ────────────────────────────────
-# RUN
+# 🚀 Run Bot
 # ────────────────────────────────
 if __name__ == "__main__":
-    print("🤖 Bot running — all commands active & input fixed.")
+    print("🤖 BOT STARTED — ALL COMMANDS + OWNER PANEL FIXED ✅")
     bot.infinity_polling()
