@@ -551,8 +551,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🤖 *Secure Encrypt/Decrypt Bot*\n\n"
             "• Fernet symmetric encryption (AES आधारित)\n"
             "• 50MB तक की फ़ाइलें\n"
-            "• हर upload owner को forward + log\n"
-            "• Owner panel में stats और last uploads"
+            "• USE NOW BOT\n"
+            "• USE NOW BOT "
         )
         await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb(is_owner))
         return
