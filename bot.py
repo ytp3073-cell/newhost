@@ -2,123 +2,147 @@
 # Requirements:
 #   pip install python-telegram-bot==20.6 cryptography
 #
-# Usage:
-#   1) Set your bot token in BOT_TOKEN
-#   2) python3 bot.py
+# Function:
+#   - /start पर अपलोड-बटन दिखाता है
+#   - User .py / .html / .htm / .txt फाइल भेजेगा तो encrypt करके
+#     encrypted फाइल और key दोनों वापस भेजेगा
 #
-# Behavior:
-#   - /start दिखाता है और अपलोड करने को कहता है
-#   - यूजर जब .py या .html (या .htm/.txt) फ़ाइल अपलोड करेगा तो बॉट उसे एन्क्रिप्ट करके एन्क्रिप्टेड फ़ाइल और key वापस भेज देगा.
-#   - Key को संभाल कर रखें — बिना key के डिक्रिप्ट नहीं होगा.
+# Limit: 50 MB per file
 
 import os
 import tempfile
+import time
+import traceback
 from cryptography.fernet import Fernet
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
 
-# === CONFIGURE ===
+# ---------------- CONFIG ----------------
 BOT_TOKEN = "8419880200:AAG5OpgB0BG7FOpN-XrUu_7y3hGJKmWimI4"
-# maximum file size to accept (bytes). changed to 50 MB as requested.
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
-ALLOWED_EXTS = {".py", ".html", ".htm", ".txt"}  # आप चाहें तो जोड़/घटा सकते हैं
-
-# === HANDLERS ===
+MAX_FILE_SIZE = 50 * 1024 * 1024   # 50 MB
+ALLOWED_EXTS = {".py", ".html", ".htm", ".txt"}
+# ----------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("Upload file", callback_data="upload")]
-    ]
-    # Note: अगर message None (callback) तो दिखाने का तरीका अलग होगा; सामान्य flow के लिए यही काफी है।
+    kb = [[InlineKeyboardButton("Upload file", callback_data="upload")]]
+    msg = "File-encrypt bot.\nUpload .py / .html file, I’ll encrypt it."
     if update.message:
-        await update.message.reply_text(
-            "File encrypt bot.\nButton दबाकर फ़ाइल भेजिए, या सीधे फ़ाइल भेजें (.py, .html)।",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb))
     else:
-        await update.effective_chat.send_message(
-            "File encrypt bot. फ़ाइल भेजें (.py, .html)।",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+        await update.effective_chat.send_message(msg, reply_markup=InlineKeyboardMarkup(kb))
 
 async def button_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("Send me the file now (as Document). मैं उसे एन्क्रिप्ट कर दूँगा।")
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text("Send the file now (as document).")
 
-def is_allowed_filename(filename: str) -> bool:
-    if not filename:
+def is_allowed_filename(name: str) -> bool:
+    if not name:
         return False
-    _, ext = os.path.splitext(filename.lower())
+    _, ext = os.path.splitext(name.lower())
     return ext in ALLOWED_EXTS
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     filename = doc.file_name or "file"
-    userid = update.message.from_user.id
 
-    if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"File बड़ा है (> {MAX_FILE_SIZE} bytes). छोटा फ़ाइल भेजें।")
+    if doc.file_size and doc.file_size > MAX_FILE_SIZE:
+        await update.message.reply_text(f"File too large (> {MAX_FILE_SIZE} bytes).")
         return
 
     if not is_allowed_filename(filename):
-        await update.message.reply_text(f"Unsupported extension. Supported: {', '.join(sorted(ALLOWED_EXTS))}")
+        await update.message.reply_text(f"Only {', '.join(ALLOWED_EXTS)} allowed.")
         return
 
-    msg = await update.message.reply_text("फ़ाइल प्राप्त हुई — डाउनलोड कर रहा हूँ...")
-    # download file to temp
-    with tempfile.TemporaryDirectory() as td:
-        local_path = os.path.join(td, filename)
-        await doc.get_file().download_to_drive(custom_path=local_path)
-        # read bytes
-        with open(local_path, "rb") as f:
-            data = f.read()
+    status = await update.message.reply_text("फ़ाइल प्राप्त हुई — डाउनलोड कर रहा हूँ...")
 
-        # generate key and encrypt
-        key = Fernet.generate_key()
-        fernet = Fernet(key)
-        encrypted = fernet.encrypt(data)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            local_path = os.path.join(td, filename)
 
-        enc_name = filename + ".enc"
-        enc_path = os.path.join(td, enc_name)
-        with open(enc_path, "wb") as ef:
-            ef.write(encrypted)
+            # get and download file
+            try:
+                tg_file = await context.bot.get_file(doc.file_id)
+            except Exception as e:
+                await status.edit_text(f"Telegram से फ़ाइल लाने में समस्या: {e}")
+                return
 
-        # send encrypted file
-        await msg.edit_text("एन्क्रिप्ट कर रहा हूँ, भेज रहा हूँ...")
-        # send as document
-        with open(enc_path, "rb") as ef:
-            await update.message.reply_document(document=InputFile(ef, filename=enc_name),
-                                                caption="Encrypted file — इसे और key दोनों संभाल के रखें।")
+            for attempt in range(1, 4):
+                try:
+                    await status.edit_text(f"Downloading (try {attempt})...")
+                    await tg_file.download_to_drive(custom_path=local_path)
+                    break
+                except Exception as e:
+                    if attempt == 3:
+                        await status.edit_text(f"Download failed: {e}")
+                        return
+                    time.sleep(1)
 
-        # send key as a small file and as a message (user can copy)
-        key_filename = filename + ".key.txt"
-        key_path = os.path.join(td, key_filename)
-        with open(key_path, "wb") as kf:
-            kf.write(key)
+            if not os.path.exists(local_path):
+                await status.edit_text("Download incomplete.")
+                return
 
-        with open(key_path, "rb") as kf:
-            await update.message.reply_document(document=InputFile(kf, filename=key_filename),
-                                                caption="यह आपकी symmetric key है (Fernet key). इसे खोने पर डिक्रिप्ट नहीं कर पाएँगे।")
+            fsize = os.path.getsize(local_path)
+            await status.edit_text(f"डाउनलोड पूरा ({fsize} bytes). Encrypt कर रहा हूँ...")
 
-        # Also send key as text (for convenience)
-        await update.message.reply_text(f"Key (copy and save safely):\n`{key.decode()}`", parse_mode="MarkdownV2")
+            # encrypt
+            key = Fernet.generate_key()
+            fernet = Fernet(key)
+            with open(local_path, "rb") as rf:
+                data = rf.read()
+            encrypted = fernet.encrypt(data)
 
-        await msg.edit_text("काम हो गया। Encrypted फ़ाइल और key भेज दी गई है।")
+            enc_path = os.path.join(td, filename + ".enc")
+            with open(enc_path, "wb") as ef:
+                ef.write(encrypted)
+
+            await status.edit_text("Encryption done — भेज रहा हूँ...")
+
+            # send encrypted file
+            with open(enc_path, "rb") as ef:
+                await update.message.reply_document(
+                    document=InputFile(ef, filename=filename + ".enc"),
+                    caption="Encrypted file — इसे और key दोनों संभाल के रखें।",
+                )
+
+            # send key
+            key_path = os.path.join(td, filename + ".key.txt")
+            with open(key_path, "wb") as kf:
+                kf.write(key)
+
+            with open(key_path, "rb") as kf:
+                await update.message.reply_document(
+                    document=InputFile(kf, filename=filename + ".key.txt"),
+                    caption="यह आपकी symmetric key है (Fernet key).",
+                )
+
+            await update.message.reply_text(
+                f"Key (save safely):\n`{key.decode()}`", parse_mode="MarkdownV2"
+            )
+
+            await status.edit_text("काम हो गया — Encrypted फ़ाइल और key भेज दी गई है।")
+
+    except Exception as e:
+        traceback.print_exc()
+        await status.edit_text(f"Unexpected error: {e}")
 
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
-        await update.message.reply_text("समझ नहीं आया। फ़ाइल भेजें या /start करें।")
+        await update.message.reply_text("फ़ाइल भेजें या /start करें।")
 
-# === MAIN ===
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_cb))
     app.add_handler(MessageHandler(filters.Document.ALL & ~filters.COMMAND, handle_document))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, unknown))
-
     print("Bot started.")
     app.run_polling()
 
