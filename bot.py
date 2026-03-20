@@ -1,202 +1,764 @@
-#!/usr/bin/env python3
-# bot.py
-# Async python-telegram-bot v20+ — Obfuscate uploaded files into a Python reconstructor.
-# SECURITY: Bot token must be provided via environment variable BOT_TOKEN (do NOT hardcode).
-# USAGE:
-#   export BOT_TOKEN="your_new_token_here"
-#   export OWNER_ID=7652176329   # optional, defaults to value below if not set
-#   pip install python-telegram-bot>=20.0
-#   python3 bot.py
-
+# main.py
 import os
-import zlib
-import random
+import json
 import logging
-from io import BytesIO
-from pathlib import Path
-from telegram import InputFile, Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import sqlite3
+from dotenv import load_dotenv
 
-# ---------------- CONFIG ----------------
-# Read token from environment for safety
-BOT_TOKEN = os.environ.get("8513005164:AAHSB3MEuhcWAZSESON3gc8JfIYgY_dCDIk")
-# Fallback owner id — replace or set OWNER_ID env instead
-OWNER_ID = int(os.environ.get("OWNER_ID", "7652176329"))
-MIN_SIZE_KB_DEFAULT = 50   # default minimum output size (KB)
-INTS_PER_LINE = 16         # integers per line in generated .py
-MAX_UPLOAD_MB = 30         # maximum allowed upload file size (MB)
-TEMP_DIR = "tmp_bot_files" # temp dir for any local file ops
-# ----------------------------------------
+# Load environment variables
+load_dotenv()
 
-if not BOT_TOKEN:
-    print("ERROR: BOT_TOKEN environment variable not set. Export it before running.")
-    raise SystemExit(1)
-
+# Enable logging
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
-RECONSTRUCTOR_TEMPLATE = '''#!/usr/bin/env python3
-# Auto-generated reconstructor. Run to recreate the original file.
-import zlib, sys
-data = [{data_array}]
-KEY = {key}
-out_path = "{out_name}"
-b = bytes(d & 0xff for d in data)
-b = bytes((x ^ KEY) for x in b)
-try:
-    orig = zlib.decompress(b)
-except Exception:
-    orig = None
-    # If padding was appended, try trimming progressively from the end
-    for cut in range(len(b)):
-        try:
-            maybe = zlib.decompress(b[:len(b)-cut])
-            orig = maybe
-            break
-        except Exception:
-            continue
-    if orig is None:
-        print("Failed to decompress. Possibly corrupted or wrong key.")
-        sys.exit(2)
-with open(out_path, "wb") as f:
-    f.write(orig)
-print("Wrote output:", out_path)
-'''
+# Database setup
+def init_database():
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    
+    # Users table
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (user_id INTEGER PRIMARY KEY,
+                  username TEXT,
+                  first_name TEXT,
+                  join_date TEXT,
+                  is_admin INTEGER DEFAULT 0,
+                  is_owner INTEGER DEFAULT 0)''')
+    
+    # Keys table
+    c.execute('''CREATE TABLE IF NOT EXISTS keys
+                 (key_text TEXT PRIMARY KEY,
+                  user_id INTEGER,
+                  duration_days INTEGER,
+                  created_at TEXT,
+                  expires_at TEXT,
+                  is_used INTEGER DEFAULT 0,
+                  used_by INTEGER,
+                  used_at TEXT)''')
+    
+    # Transactions table
+    c.execute('''CREATE TABLE IF NOT EXISTS transactions
+                 (txn_id TEXT PRIMARY KEY,
+                  user_id INTEGER,
+                  amount INTEGER,
+                  duration_days INTEGER,
+                  status TEXT,
+                  created_at TEXT,
+                  order_id TEXT)''')
+    
+    # Bot settings table
+    c.execute('''CREATE TABLE IF NOT EXISTS bot_settings
+                 (setting_key TEXT PRIMARY KEY,
+                  setting_value TEXT)''')
+    
+    # Insert default settings
+    c.execute("INSERT OR IGNORE INTO bot_settings (setting_key, setting_value) VALUES (?, ?)",
+              ('bot_name', 'ONLINE KEY BOT'))
+    c.execute("INSERT OR IGNORE INTO bot_settings (setting_key, setting_value) VALUES (?, ?)",
+              ('welcome_message', 'Welcome to License Key Bot'))
+    c.execute("INSERT OR IGNORE INTO bot_settings (setting_key, setting_value) VALUES (?, ?)",
+              ('payment_details', 'Scan to pay and send screenshot'))
+    c.execute("INSERT OR IGNORE INTO bot_settings (setting_key, setting_value) VALUES (?, ?)",
+              ('admin_ids', '[]'))
+    c.execute("INSERT OR IGNORE INTO bot_settings (setting_key, setting_value) VALUES (?, ?)",
+              ('owner_id', ''))
+    
+    conn.commit()
+    conn.close()
 
-def ensure_temp_dir():
-    Path(TEMP_DIR).mkdir(exist_ok=True)
+# Price configuration
+PRICES = {
+    '1_day': 120,
+    '3_days': 199,
+    '7_days': 349,
+    '30_days': 850,
+    'season': 1150
+}
 
-def process_file_bytes(orig_bytes: bytes, min_size_kb: int = MIN_SIZE_KB_DEFAULT):
-    """
-    Compress -> XOR with single-byte key -> pad to min_size_kb -> return int list and key.
-    Note: single-byte XOR is weak (obfuscation only).
-    """
-    compressed = zlib.compress(orig_bytes, level=9)
-    key = random.randint(1, 255)
-    xord = bytes(b ^ key for b in compressed)
-    target_len = max(len(xord), min_size_kb * 1024)
-    if len(xord) < target_len:
-        pad_len = target_len - len(xord)
-        xord += os.urandom(pad_len)
-    int_list = list(xord)
-    return int_list, key, len(compressed), len(orig_bytes)
+DURATIONS = {
+    '1_day': 1,
+    '3_days': 3,
+    '7_days': 7,
+    '30_days': 30,
+    'season': 90  # Season as 90 days
+}
 
-def make_reconstructor_py(int_list, key, original_filename):
-    lines = []
-    for i in range(0, len(int_list), INTS_PER_LINE):
-        chunk = int_list[i:i+INTS_PER_LINE]
-        lines.append(", ".join(str(x) for x in chunk))
-    data_array = ",\n    ".join(lines)
-    out_name = os.path.basename(original_filename).replace('"', '_').replace("'", "_")
-    content = RECONSTRUCTOR_TEMPLATE.format(data_array=data_array, key=key, out_name=out_name)
-    return content.encode("utf-8")
+# Helper functions
+def get_bot_setting(setting_key):
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    c.execute("SELECT setting_value FROM bot_settings WHERE setting_key = ?", (setting_key,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else None
 
+def update_bot_setting(setting_key, setting_value):
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO bot_settings (setting_key, setting_value) VALUES (?, ?)",
+              (setting_key, setting_value))
+    conn.commit()
+    conn.close()
+
+def is_admin(user_id):
+    admin_ids = json.loads(get_bot_setting('admin_ids') or '[]')
+    owner_id = get_bot_setting('owner_id')
+    return str(user_id) in admin_ids or str(user_id) == owner_id
+
+def is_owner(user_id):
+    owner_id = get_bot_setting('owner_id')
+    return str(user_id) == owner_id
+
+def add_user(user_id, username, first_name):
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, join_date) VALUES (?, ?, ?, ?)",
+              (user_id, username, first_name, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+def generate_key(duration_days):
+    import uuid
+    import hashlib
+    key = hashlib.md5(f"{uuid.uuid4()}{datetime.now()}".encode()).hexdigest()[:16].upper()
+    return key
+
+def save_key(key, duration_days, created_by):
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    expires_at = datetime.now() + timedelta(days=duration_days)
+    c.execute("INSERT INTO keys (key_text, user_id, duration_days, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+              (key, created_by, duration_days, datetime.now().isoformat(), expires_at.isoformat()))
+    conn.commit()
+    conn.close()
+    return key
+
+def verify_key(key_text):
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    c.execute("SELECT key_text, duration_days, expires_at, is_used FROM keys WHERE key_text = ?", (key_text,))
+    key_data = c.fetchone()
+    conn.close()
+    
+    if not key_data:
+        return False, "Invalid key"
+    
+    key_text, duration_days, expires_at, is_used = key_data
+    
+    if is_used:
+        return False, "Key already used"
+    
+    expires_at_date = datetime.fromisoformat(expires_at)
+    if expires_at_date < datetime.now():
+        return False, "Key expired"
+    
+    return True, key_text
+
+def use_key(key_text, user_id):
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    c.execute("UPDATE keys SET is_used = 1, used_by = ?, used_at = ? WHERE key_text = ?",
+              (user_id, datetime.now().isoformat(), key_text))
+    conn.commit()
+    conn.close()
+
+def save_transaction(txn_id, user_id, amount, duration_days, status, order_id):
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO transactions (txn_id, user_id, amount, duration_days, status, created_at, order_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+              (txn_id, user_id, amount, duration_days, status, datetime.now().isoformat(), order_id))
+    conn.commit()
+    conn.close()
+
+# Bot command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid != OWNER_ID:
-        await update.message.reply_text("Unauthorized.")
-        return
+    user = update.effective_user
+    add_user(user.id, user.username, user.first_name)
+    
+    welcome_msg = get_bot_setting('welcome_message')
+    bot_name = get_bot_setting('bot_name')
+    
+    keyboard = [
+        [InlineKeyboardButton("💰 Generate Key (Paid)", callback_data="generate_key")],
+        [InlineKeyboardButton("🔑 Reset Key", callback_data="reset_key")]
+    ]
+    
+    if is_admin(user.id):
+        keyboard.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data="admin_panel")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        "Bot ready. Send a file (document). Optional caption: minkb=100 to force minimum output size in KB."
+        f"🌟 {bot_name} 🌟\n\n{welcome_msg}\n\nSelect an option:",
+        reply_markup=reply_markup
     )
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Send a file to obfuscate. Caption example: minkb=120\n"
-        "Max upload size enforced on server."
-    )
-
-async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid != OWNER_ID:
-        await update.message.reply_text("Unauthorized.")
-        return
-
-    msg = update.message
-    doc = msg.document
-    if not doc:
-        await update.message.reply_text("No document found.")
-        return
-
-    # Check file size limit
-    file_size = doc.file_size or 0
-    if file_size > MAX_UPLOAD_MB * 1024 * 1024:
-        await update.message.reply_text(f"File too large. Max allowed {MAX_UPLOAD_MB} MB.")
-        return
-
-    caption = msg.caption or ""
-    minkb = MIN_SIZE_KB_DEFAULT
-    for part in caption.split():
-        if part.lower().startswith("minkb="):
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    
+    if query.data == "generate_key":
+        keyboard = [
+            [InlineKeyboardButton("1 Day - ₹120", callback_data="buy_1_day")],
+            [InlineKeyboardButton("3 Days - ₹199", callback_data="buy_3_days")],
+            [InlineKeyboardButton("7 Days - ₹349", callback_data="buy_7_days")],
+            [InlineKeyboardButton("30 Days - ₹850", callback_data="buy_30_days")],
+            [InlineKeyboardButton("Season - ₹1150", callback_data="buy_season")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "📦 Select key duration:\n\n💰 Prices:\n• 1 Day - ₹120\n• 3 Days - ₹199\n• 7 Days - ₹349\n• 30 Days - ₹850\n• Season - ₹1150",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data.startswith("buy_"):
+        duration_key = query.data.replace("buy_", "")
+        duration_days = DURATIONS[duration_key]
+        amount = PRICES[duration_key]
+        
+        # Generate unique order ID
+        order_id = f"ORD_{user.id}_{datetime.now().timestamp()}"
+        
+        context.user_data['pending_payment'] = {
+            'duration_days': duration_days,
+            'amount': amount,
+            'order_id': order_id
+        }
+        
+        payment_details = get_bot_setting('payment_details')
+        bot_name = get_bot_setting('bot_name')
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ PAID after payment", callback_data=f"paid_{order_id}")],
+            [InlineKeyboardButton("🔙 Cancel", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"💳 {bot_name}\n\n{payment_details}\n\n"
+            f"💰 Amount: ₹{amount}\n"
+            f"📅 Duration: {duration_days} days\n"
+            f"🆔 Order ID: {order_id}\n\n"
+            f"⚠️ Click PAID after completing payment",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data.startswith("paid_"):
+        order_id = query.data.replace("paid_", "")
+        pending = context.user_data.get('pending_payment')
+        
+        if not pending or pending.get('order_id') != order_id:
+            await query.edit_message_text("❌ Payment session expired. Please try again.")
+            return
+        
+        # Create transaction record
+        txn_id = f"TXN_{user.id}_{datetime.now().timestamp()}"
+        save_transaction(txn_id, user.id, pending['amount'], pending['duration_days'], 'pending', order_id)
+        
+        # Here you would typically wait for admin verification
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"✅ Payment recorded!\n\n"
+            f"🆔 Transaction ID: {txn_id}\n"
+            f"💰 Amount: ₹{pending['amount']}\n"
+            f"📅 Duration: {pending['duration_days']} days\n\n"
+            f"⏳ Waiting for admin verification...\n"
+            f"You will receive your key shortly.",
+            reply_markup=reply_markup
+        )
+        
+        # Notify admins
+        admin_ids = json.loads(get_bot_setting('admin_ids') or '[]')
+        for admin_id in admin_ids:
             try:
-                minkb = int(part.split("=",1)[1])
+                admin_keyboard = [
+                    [InlineKeyboardButton("✅ Verify Payment", callback_data=f"verify_{txn_id}")],
+                    [InlineKeyboardButton("❌ Reject Payment", callback_data=f"reject_{txn_id}")]
+                ]
+                admin_markup = InlineKeyboardMarkup(admin_keyboard)
+                
+                await context.bot.send_message(
+                    admin_id,
+                    f"💰 New Payment Request!\n\n"
+                    f"User: {user.first_name} (@{user.username})\n"
+                    f"User ID: {user.id}\n"
+                    f"Amount: ₹{pending['amount']}\n"
+                    f"Duration: {pending['duration_days']} days\n"
+                    f"Order ID: {order_id}\n"
+                    f"TXN ID: {txn_id}",
+                    reply_markup=admin_markup
+                )
             except:
                 pass
-
-    filename = doc.file_name or "input.bin"
-    await update.message.reply_text(f"Downloading '{filename}' ({file_size} bytes)...")
-    try:
-        file_obj = await doc.get_file()
-        bio = BytesIO()
-        await file_obj.download_to_memory(out=bio)
-        bio.seek(0)
-        data = bio.read()
-    except Exception as e:
-        logging.exception("Download failed")
-        await update.message.reply_text("Download failed: " + str(e))
-        return
-
-    if len(data) == 0:
-        await update.message.reply_text("Empty file received.")
-        return
-
-    await update.message.reply_text("Processing file (compress + obfuscate) ...")
-    try:
-        int_list, key, comp_len, orig_len = process_file_bytes(data, min_size_kb=minkb)
-        recon_bytes = make_reconstructor_py(int_list, key, filename)
-    except Exception as e:
-        logging.exception("Processing failed")
-        await update.message.reply_text("Processing failed: " + str(e))
-        return
-
-    out_filename = f"reconstructor__{os.path.splitext(filename)[0]}.py"
-    bio_out = BytesIO(recon_bytes)
-    bio_out.name = out_filename
-    bio_out.seek(0)
-
-    try:
-        await update.message.reply_document(
-            document=InputFile(bio_out, filename=out_filename),
-            filename=out_filename,
-            caption=f"Run: python3 {out_filename}  (orig {orig_len} bytes)"
+    
+    elif query.data.startswith("verify_"):
+        if not is_admin(user.id):
+            await query.edit_message_text("❌ You don't have permission to do this.")
+            return
+        
+        txn_id = query.data.replace("verify_", "")
+        conn = sqlite3.connect('bot_database.db')
+        c = conn.cursor()
+        c.execute("SELECT user_id, amount, duration_days FROM transactions WHERE txn_id = ?", (txn_id,))
+        txn = c.fetchone()
+        
+        if txn:
+            user_id, amount, duration_days = txn
+            
+            # Generate and save key
+            key = generate_key(duration_days)
+            save_key(key, duration_days, user_id)
+            
+            # Update transaction status
+            c.execute("UPDATE transactions SET status = 'completed' WHERE txn_id = ?", (txn_id,))
+            conn.commit()
+            
+            # Send key to user
+            await context.bot.send_message(
+                user_id,
+                f"✅ Payment Verified!\n\n"
+                f"🔑 Your License Key: `{key}`\n"
+                f"📅 Valid for: {duration_days} days\n\n"
+                f"Use this key with /reset command"
+            )
+            
+            await query.edit_message_text(f"✅ Payment verified! Key sent to user.")
+        
+        conn.close()
+    
+    elif query.data.startswith("reject_"):
+        if not is_admin(user.id):
+            await query.edit_message_text("❌ You don't have permission to do this.")
+            return
+        
+        txn_id = query.data.replace("reject_", "")
+        conn = sqlite3.connect('bot_database.db')
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM transactions WHERE txn_id = ?", (txn_id,))
+        txn = c.fetchone()
+        
+        if txn:
+            user_id = txn[0]
+            c.execute("UPDATE transactions SET status = 'rejected' WHERE txn_id = ?", (txn_id,))
+            conn.commit()
+            
+            await context.bot.send_message(
+                user_id,
+                f"❌ Payment Rejected!\n\n"
+                f"Please contact support for assistance."
+            )
+            
+            await query.edit_message_text(f"❌ Payment rejected.")
+        
+        conn.close()
+    
+    elif query.data == "reset_key":
+        context.user_data['resetting_key'] = True
+        await query.edit_message_text(
+            "🔑 Please enter your license key to reset:\n\n"
+            "Format: XXXX-XXXX-XXXX-XXXX"
         )
-    except Exception:
-        logging.exception("Send failed")
-        await update.message.reply_text("Failed to send generated file.")
+    
+    elif query.data == "admin_panel":
+        if not is_admin(user.id):
+            await query.edit_message_text("❌ You don't have permission to access admin panel.")
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("👥 View Users", callback_data="admin_users")],
+            [InlineKeyboardButton("🔑 Manage Keys", callback_data="admin_keys")],
+            [InlineKeyboardButton("💰 Transactions", callback_data="admin_transactions")],
+            [InlineKeyboardButton("⚙️ Bot Settings", callback_data="admin_settings")],
+            [InlineKeyboardButton("➕ Add Admin", callback_data="admin_add_admin")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]
+        ]
+        
+        if is_owner(user.id):
+            keyboard.insert(3, [InlineKeyboardButton("👑 Owner Settings", callback_data="owner_settings")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "⚙️ Admin Panel\n\nSelect an option:",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data == "admin_users":
+        if not is_admin(user.id):
+            return
+        
+        conn = sqlite3.connect('bot_database.db')
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM users")
+        total_users = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM users WHERE is_admin = 1")
+        total_admins = c.fetchone()[0]
+        conn.close()
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"👥 User Statistics\n\n"
+            f"Total Users: {total_users}\n"
+            f"Total Admins: {total_admins}\n\n"
+            f"Use /users command to list all users",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data == "admin_keys":
+        if not is_admin(user.id):
+            return
+        
+        conn = sqlite3.connect('bot_database.db')
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM keys")
+        total_keys = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM keys WHERE is_used = 1")
+        used_keys = c.fetchone()[0]
+        conn.close()
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ Generate New Key", callback_data="admin_generate_key")],
+            [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"🔑 Key Statistics\n\n"
+            f"Total Keys: {total_keys}\n"
+            f"Used Keys: {used_keys}\n"
+            f"Available Keys: {total_keys - used_keys}",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data == "admin_generate_key":
+        if not is_admin(user.id):
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("1 Day", callback_data="gen_1")],
+            [InlineKeyboardButton("3 Days", callback_data="gen_3")],
+            [InlineKeyboardButton("7 Days", callback_data="gen_7")],
+            [InlineKeyboardButton("30 Days", callback_data="gen_30")],
+            [InlineKeyboardButton("Season (90 Days)", callback_data="gen_90")],
+            [InlineKeyboardButton("🔙 Back", callback_data="admin_keys")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "🔑 Generate New Key\n\nSelect duration:",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data.startswith("gen_"):
+        if not is_admin(user.id):
+            return
+        
+        days = int(query.data.replace("gen_", ""))
+        key = generate_key(days)
+        save_key(key, days, user.id)
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back to Keys", callback_data="admin_keys")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"✅ Key Generated Successfully!\n\n"
+            f"🔑 Key: `{key}`\n"
+            f"📅 Duration: {days} days\n"
+            f"👤 Generated by: {user.first_name}",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    
+    elif query.data == "admin_transactions":
+        if not is_admin(user.id):
+            return
+        
+        conn = sqlite3.connect('bot_database.db')
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM transactions WHERE status = 'pending'")
+        pending = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM transactions WHERE status = 'completed'")
+        completed = c.fetchone()[0]
+        c.execute("SELECT SUM(amount) FROM transactions WHERE status = 'completed'")
+        total_revenue = c.fetchone()[0] or 0
+        conn.close()
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"💰 Transaction Statistics\n\n"
+            f"Pending: {pending}\n"
+            f"Completed: {completed}\n"
+            f"Total Revenue: ₹{total_revenue}\n\n"
+            f"Use /transactions to view all transactions",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data == "admin_settings":
+        if not is_admin(user.id):
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Change Bot Name", callback_data="settings_bot_name")],
+            [InlineKeyboardButton("💬 Change Welcome Message", callback_data="settings_welcome")],
+            [InlineKeyboardButton("💳 Change Payment Details", callback_data="settings_payment")],
+            [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "⚙️ Bot Settings\n\nSelect setting to modify:",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data == "owner_settings":
+        if not is_owner(user.id):
+            await query.edit_message_text("❌ Only the owner can access this.")
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("👑 Set New Owner", callback_data="owner_set_owner")],
+            [InlineKeyboardButton("🔄 Rebrand Bot", callback_data="owner_rebrand")],
+            [InlineKeyboardButton("📊 Full Statistics", callback_data="owner_stats")],
+            [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "👑 Owner Settings\n\nSelect an option:",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data == "owner_rebrand":
+        if not is_owner(user.id):
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("🏷️ Change Bot Name", callback_data="rebrand_name")],
+            [InlineKeyboardButton("💬 Change Welcome Message", callback_data="rebrand_welcome")],
+            [InlineKeyboardButton("💳 Change Payment Details", callback_data="rebrand_payment")],
+            [InlineKeyboardButton("🎨 Reset to Default", callback_data="rebrand_reset")],
+            [InlineKeyboardButton("🔙 Back", callback_data="owner_settings")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "🔄 Rebrand Bot\n\nCustomize your bot's appearance:",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data == "back_to_menu":
+        keyboard = [
+            [InlineKeyboardButton("💰 Generate Key (Paid)", callback_data="generate_key")],
+            [InlineKeyboardButton("🔑 Reset Key", callback_data="reset_key")]
+        ]
+        
+        if is_admin(user.id):
+            keyboard.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data="admin_panel")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🌟 Main Menu\n\nSelect an option:",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data.startswith("settings_") or query.data.startswith("rebrand_"):
+        setting_type = query.data.split("_", 1)[1]
+        context.user_data['editing_setting'] = setting_type
+        
+        prompts = {
+            'bot_name': "Enter new bot name:",
+            'welcome': "Enter new welcome message:",
+            'payment': "Enter new payment details (UPI ID, QR instructions, etc):"
+        }
+        
+        await query.edit_message_text(prompts.get(setting_type, "Enter new value:"))
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message_text = update.message.text
+    
+    if context.user_data.get('resetting_key'):
+        # Verify key
+        success, result = verify_key(message_text)
+        
+        if success:
+            use_key(result, user.id)
+            await update.message.reply_text(
+                f"✅ Key activated successfully!\n\n"
+                f"Your license is now active. Enjoy!"
+            )
+        else:
+            await update.message.reply_text(f"❌ {result}\n\nPlease try again with a valid key.")
+        
+        context.user_data['resetting_key'] = False
+    
+    elif context.user_data.get('editing_setting'):
+        setting = context.user_data['editing_setting']
+        
+        if setting == 'bot_name':
+            update_bot_setting('bot_name', message_text)
+            await update.message.reply_text(f"✅ Bot name updated to: {message_text}")
+        elif setting == 'welcome':
+            update_bot_setting('welcome_message', message_text)
+            await update.message.reply_text(f"✅ Welcome message updated!")
+        elif setting == 'payment':
+            update_bot_setting('payment_details', message_text)
+            await update.message.reply_text(f"✅ Payment details updated!")
+        
+        context.user_data['editing_setting'] = None
+
+async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ You don't have permission.")
         return
+    
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id, username, first_name, join_date FROM users LIMIT 50")
+    users = c.fetchall()
+    conn.close()
+    
+    if not users:
+        await update.message.reply_text("No users found.")
+        return
+    
+    user_list = "👥 Recent Users:\n\n"
+    for user in users:
+        user_list += f"ID: {user[0]}\nName: {user[2]}\n@{user[1]}\nJoined: {user[3][:10]}\n\n"
+    
+    await update.message.reply_text(user_list)
 
-    logging.info(f"User {uid} obfuscated {filename} -> {out_filename} (orig {orig_len}, comp {comp_len}, key {key})")
+async def list_transactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ You don't have permission.")
+        return
+    
+    conn = sqlite3.connect('bot_database.db')
+    c = conn.cursor()
+    c.execute("SELECT txn_id, user_id, amount, status, created_at FROM transactions ORDER BY created_at DESC LIMIT 20")
+    transactions = c.fetchall()
+    conn.close()
+    
+    if not transactions:
+        await update.message.reply_text("No transactions found.")
+        return
+    
+    txn_list = "💰 Recent Transactions:\n\n"
+    for txn in transactions:
+        txn_list += f"TXN: {txn[0][:10]}\nUser: {txn[1]}\nAmount: ₹{txn[2]}\nStatus: {txn[3]}\nTime: {txn[4][:16]}\n\n"
+    
+    await update.message.reply_text(txn_list)
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logging.exception("Exception while handling update")
+async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("❌ Only the owner can add admins.")
+        return
+    
+    try:
+        user_id = context.args[0]
+        admin_ids = json.loads(get_bot_setting('admin_ids') or '[]')
+        
+        if user_id not in admin_ids:
+            admin_ids.append(user_id)
+            update_bot_setting('admin_ids', json.dumps(admin_ids))
+            
+            conn = sqlite3.connect('bot_database.db')
+            c = conn.cursor()
+            c.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            conn.close()
+            
+            await update.message.reply_text(f"✅ User {user_id} is now an admin!")
+        else:
+            await update.message.reply_text(f"User {user_id} is already an admin.")
+    except:
+        await update.message.reply_text("Usage: /addadmin <user_id>")
+
+async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("❌ Only the owner can remove admins.")
+        return
+    
+    try:
+        user_id = context.args[0]
+        admin_ids = json.loads(get_bot_setting('admin_ids') or '[]')
+        
+        if user_id in admin_ids:
+            admin_ids.remove(user_id)
+            update_bot_setting('admin_ids', json.dumps(admin_ids))
+            
+            conn = sqlite3.connect('bot_database.db')
+            c = conn.cursor()
+            c.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            conn.close()
+            
+            await update.message.reply_text(f"✅ User {user_id} is no longer an admin.")
+        else:
+            await update.message.reply_text(f"User {user_id} is not an admin.")
+    except:
+        await update.message.reply_text("Usage: /removeadmin <user_id>")
+
+async def set_owner_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("❌ Only the current owner can set a new owner.")
+        return
+    
+    try:
+        user_id = context.args[0]
+        update_bot_setting('owner_id', user_id)
+        
+        conn = sqlite3.connect('bot_database.db')
+        c = conn.cursor()
+        c.execute("UPDATE users SET is_owner = 1 WHERE user_id = ?", (user_id,))
+        c.execute("UPDATE users SET is_owner = 0 WHERE user_id != ?", (user_id,))
+        conn.commit()
+        conn.close()
+        
+        await update.message.reply_text(f"✅ New owner set: {user_id}")
+    except:
+        await update.message.reply_text("Usage: /setowner <user_id>")
 
 def main():
-    ensure_temp_dir()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(MessageHandler(filters.Document.ALL, on_document))
-    app.add_error_handler(error_handler)
-    print("Bot started. Listening ...")
-    app.run_polling()
+    # Initialize database
+    init_database()
+    
+    # Get bot token from environment variable
+    token = os.getenv('BOT_TOKEN')
+    if not token:
+        logger.error("No BOT_TOKEN found in environment variables!")
+        return
+    
+    # Create application
+    application = Application.builder().token(token).build()
+    
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("users", list_users))
+    application.add_handler(CommandHandler("transactions", list_transactions))
+    application.add_handler(CommandHandler("addadmin", add_admin_command))
+    application.add_handler(CommandHandler("removeadmin", remove_admin_command))
+    application.add_handler(CommandHandler("setowner", set_owner_command))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Start the bot
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
