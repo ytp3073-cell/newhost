@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: telegram-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 H.py
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: "8526984149:AAENzT916bRFEAd7o-Zv7uk5rMk-lAioKH8"
+      - key: OWNER_ID
+        value: "8406101760"
+      - key: ADMIN_ID
+        value: "8406101760"
+      - key: YOUR_USERNAME
+        value: "@ritikxyzhost"
+      - key: UPDATE_CHANNEL
+        value: "https://t.me/ritikxyzhost"
+      - key: PORT
+        value: "10000"
